@@ -43,6 +43,47 @@ def register(client: TestClient, name: str) -> tuple[dict, dict[str, str]]:
     return data, {"Authorization": f"Bearer {data['token']}"}
 
 
+def test_acceptance_scenario_1_sender_reads_completed_result():
+    with TestClient(main.app) as client:
+        agent_a, agent_a_headers = register(client, "agent-a")
+        agent_b, agent_b_headers = register(client, "agent-b")
+
+        created = client.post(
+            "/api/v1/tasks",
+            headers=agent_a_headers,
+            json={"to": agent_b["agent_id"], "input": "hello relay"},
+        )
+        assert created.status_code == 201
+        task_id = created.json()["task_id"]
+        assert created.json()["status"] == "queued"
+
+        claim = client.post(
+            "/api/v1/tasks/claim",
+            headers=agent_b_headers,
+            json={"worker_id": "worker-b", "wait_seconds": 0},
+        )
+        assert claim.status_code == 200
+        claim_data = claim.json()
+        assert claim_data["task_id"] == task_id
+        assert claim_data["input"] == "hello relay"
+
+        output = "HELLO RELAY"
+        complete = client.post(
+            f"/api/v1/tasks/{task_id}/complete",
+            headers=agent_b_headers,
+            json={"claim_token": claim_data["claim_token"], "output": output},
+        )
+        assert complete.status_code == 200
+        assert complete.json() == {"task_id": task_id, "status": "completed"}
+
+        result = client.get(f"/api/v1/tasks/{task_id}", headers=agent_a_headers)
+        assert result.status_code == 200
+        task = result.json()
+        assert task["status"] == "completed"
+        assert task["output"] == output
+        assert task["error"] is None
+
+
 def test_protocol_idempotency_terminal_retry_and_auth_boundary():
     with TestClient(main.app) as client:
         sender, sender_headers = register(client, "sender")
