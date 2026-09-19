@@ -1,0 +1,53 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run tests
+        run: uv run pytest -q
+        env:
+          RELAY_DATABASE_URL: sqlite:////tmp/agent-relay-test.db
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: agent-relay
+
+      - name: Build image
+        run: docker build -t agent-relay:latest .
+
+      - name: Load image into kind
+        run: kind load docker-image agent-relay:latest --name agent-relay
+
+      - name: Deploy PostgreSQL and app
+        run: kubectl apply -f k8s/postgres.yaml -f k8s/app.yaml
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/postgres --timeout=120s
+          kubectl rollout status deployment/agent-relay --timeout=120s
+
+      - name: Smoke test
+        run: |
+          kubectl run smoke-test --restart=Never --rm -i --image=curlimages/curl:8.12.1 --command -- \
+            sh -c "curl -sf http://agent-relay:8000/health && curl -sf http://agent-relay:8000/ready"
